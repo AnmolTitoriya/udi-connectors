@@ -17,6 +17,7 @@ over an HTTP API.
 | MongoDB | source | `udi_connectors.mongodb` |
 | SQL (MySQL/MSSQL/Oracle/SQLite via SQLAlchemy) | source | `udi_connectors.sql` |
 | File upload | source | `udi_connectors.file_upload` |
+| Amazon Athena | source | `udi_connectors.athena` |
 | S3 | target | `udi_connectors.s3` |
 
 ## Install (editable, for local dev alongside udi-packages)
