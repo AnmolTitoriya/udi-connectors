@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "udi-connectors"
+version = "0.1.0"
+description = "UDI source/target connector implementations: postgresql, mongodb, sql, s3, file_upload"
+requires-python = ">=3.12"
+dependencies = [
+    "udi-packages",
+    "pyarrow>=14.0",
+    "pandas>=2.2",
+    "pydantic>=2.5",
+    "psycopg>=3.2",
+    "psycopg-pool>=3.2",
+    "sqlalchemy>=2.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "motor>=3.4",
+    "pymongo>=4.6",
+    "boto3>=1.34",
+    "botocore>=1.34",
+    "pdfplumber>=0.11.0",
+    "python-docx>=1.1.0",
+]
+
+[tool.uv.sources]
+udi-packages = { path = "../udi-packages", editable = true }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "PTH", "T20", "SIM", "RET"]
+ignore = ["S101", "TRY003", "UP035", "UP045", "UP047", "UP006", "E501", "W292", "I001", "F401", "RET505", "SIM117"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = false
+warn_unused_ignores = false
+ignore_missing_imports = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.14",
+    "moto[s3]>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "python-dotenv>=1.0",
+]
