@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from collections.abc import AsyncIterator
 
@@ -43,6 +42,7 @@ class SQLConnector:
 
     async def connect(self, config: SQLConfig) -> None:
         logger.info("Connecting SQL: dialect=%s host=%s db=%s", config.dialect, config.host, config.database)
+        self.dialect = config.dialect
         try:
             driver = self.DIALECT_MAP[self.dialect]["async" if self.use_async else "sync"]
             if config.driver:
@@ -93,41 +93,28 @@ class SQLConnector:
             return False
 
     async def list_tables(self, config: SQLConfig) -> list[str]:
-        def _list():
-            with self._engine.sync_engine.connect() as conn:
-                insp = inspect(conn)
-                return insp.get_table_names()
-        tables = await asyncio.get_running_loop().run_in_executor(None, _list)
+        async with self._engine.connect() as conn:
+            tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
         return sorted(tables)
 
     async def list_databases(self, config: SQLConfig) -> list[str]:
         dialect = config.dialect or "postgresql"
         if dialect == "postgresql":
-            def _list():
-                with self._engine.sync_engine.connect() as conn:
-                    rows = conn.execute(text("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname"))
-                    return [r[0] for r in rows]
+            query = text("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname")
         elif dialect == "mysql":
-            def _list():
-                with self._engine.sync_engine.connect() as conn:
-                    rows = conn.execute(text("SHOW DATABASES"))
-                    return [r[0] for r in rows]
+            query = text("SHOW DATABASES")
         elif dialect == "mssql":
-            def _list():
-                with self._engine.sync_engine.connect() as conn:
-                    rows = conn.execute(text("SELECT name FROM sys.databases ORDER BY name"))
-                    return [r[0] for r in rows]
+            query = text("SELECT name FROM sys.databases ORDER BY name")
         else:
             return [config.database]
-        return await asyncio.get_running_loop().run_in_executor(None, _list)
+
+        async with self._engine.connect() as conn:
+            rows = await conn.execute(query)
+            return [r[0] for r in rows]
 
     async def get_schema(self, table_name: str) -> pa.Schema:
-        async with self._engine.begin() as conn:
-            def inspect_sync():
-                insp = inspect(conn.sync_engine)
-                return insp.get_columns(table_name)
-
-            cols = await asyncio.get_running_loop().run_in_executor(None, inspect_sync)
+        async with self._engine.connect() as conn:
+            cols = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_columns(table_name))
 
         type_map = {
             "INTEGER": pa.int32(),
