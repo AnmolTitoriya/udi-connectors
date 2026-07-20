@@ -30,6 +30,92 @@ class Target:
         return cls
 
 
+def register_source(name: str, connector_cls: type) -> None:
+    """Function-form equivalent of @Source(name) — for connectors that
+    register themselves programmatically (e.g. a plugin loaded at runtime)
+    rather than via the decorator at import time."""
+    _sources[name] = connector_cls
+
+
+def register_target(name: str, connector_cls: type) -> None:
+    """Function-form equivalent of @Target(name)."""
+    _targets[name] = connector_cls
+
+
+def get_source_class(name: str) -> type | None:
+    """The raw connector class for a registered source, or None. Custom and
+    built-in connectors are indistinguishable here — both just live in the
+    same _sources dict, keyed by whatever name they registered under."""
+    return _sources.get(name)
+
+
+def get_target_class(name: str) -> type | None:
+    return _targets.get(name)
+
+
+def load_plugins(group: str = "udi_connectors.plugins") -> list[str]:
+    """Import every module registered under the `udi_connectors.plugins`
+    entry-point group, so a pip-installed third-party package can add a
+    custom connector with zero changes to this repo. Each entry point's
+    target module is expected to self-register on import via @Source(...)/
+    @Target(...) (or register_source/register_target) — the same mechanism
+    the built-in connectors use. A broken plugin is logged and skipped
+    rather than taking down the whole registry.
+    """
+    import importlib
+    from importlib.metadata import entry_points
+
+    loaded: list[str] = []
+    try:
+        eps = entry_points(group=group)
+    except Exception as e:
+        logger.warning("Could not enumerate connector plugins: %s", e)
+        return loaded
+
+    for ep in eps:
+        try:
+            importlib.import_module(ep.value)
+            loaded.append(ep.name)
+            logger.info("Loaded connector plugin: %s (%s)", ep.name, ep.value)
+        except Exception as e:
+            logger.warning("Failed to load connector plugin '%s' (%s): %s", ep.name, ep.value, e)
+    return loaded
+
+
+def load_plugin_dir(path: str | None = None) -> list[str]:
+    """Import every top-level .py file in `path` (default:
+    $UDI_CONNECTOR_PLUGINS_DIR) so it can self-register, the same way
+    load_plugins() does for packaged plugins — a lower-ceremony option for a
+    custom connector that isn't (yet) worth publishing as its own package.
+    """
+    import importlib.util
+    import os as _os
+
+    path = path or _os.environ.get("UDI_CONNECTOR_PLUGINS_DIR")
+    if not path:
+        return []
+    plugin_dir = Path(path)
+    if not plugin_dir.is_dir():
+        logger.warning("UDI_CONNECTOR_PLUGINS_DIR=%s is not a directory — skipping", path)
+        return []
+
+    loaded: list[str] = []
+    for f in sorted(plugin_dir.glob("*.py")):
+        if f.stem.startswith("_"):
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(f"udi_connectors._plugin_{f.stem}", f)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            loaded.append(f.stem)
+            logger.info("Loaded connector plugin from file: %s", f)
+        except Exception as e:
+            logger.warning("Failed to load connector plugin file '%s': %s", f, e)
+    return loaded
+
+
 def create_source(name: str, **config_kwargs) -> tuple:
     if name not in _sources:
         raise ValueError(f"Unknown source: {name}. Available: {list(_sources.keys())}")
