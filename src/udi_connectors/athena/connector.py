@@ -117,7 +117,7 @@ class AthenaConnector:
 
         return await asyncio.get_running_loop().run_in_executor(None, _list)
 
-    async def get_schema(self, table_name: str) -> pa.Schema:
+    async def get_schema(self, table_name: str) -> pa.Schema | None:
         config = self._config
 
         def _fetch():
@@ -126,8 +126,33 @@ class AthenaConnector:
             )
             return resp["TableMetadata"]["Columns"]
 
-        columns = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+        try:
+            columns = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+        except ClientError:
+            return None
         return self._columns_to_arrow_schema(columns)
+
+    async def dataset_exists(self, table_name: str) -> bool:
+        """Whether a Glue table is registered for `table_name` in this database.
+
+        Informational only — Athena is a query engine, not a write target in
+        this pipeline, so this doesn't gate a load() the way S3's does. It's
+        used to report Glue-side schema drift after a curated write, since
+        schema evolution of the Glue table itself is a manual/crawler step
+        (see the pipeline module's notes).
+        """
+        config = self._config
+
+        def _fetch():
+            self._client.get_table_metadata(
+                CatalogName=config.catalog, DatabaseName=config.database, TableName=table_name,
+            )
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, _fetch)
+            return True
+        except ClientError:
+            return False
 
     def _columns_to_arrow_schema(self, columns: list[dict]) -> pa.Schema:
         fields = [
@@ -253,9 +278,20 @@ class AthenaConnector:
         filter_predicate: str | None = None,
     ) -> ExtractResult:
         logger.info("Extracting Athena table: %s", table_name)
+        query = self._build_query(table_name, config, columns, filter_predicate)
+        return await self._run_and_stream(query, table_name, config)
+
+    async def extract_sql(self, sql: str, table_name: str) -> ExtractResult:
+        """Run an arbitrary SQL statement — a manual Stage 2 transform — and
+        stream the result batch-by-batch the same way extract() does."""
+        if not self._config:
+            raise ConnectorError("AthenaConnector is not connected", "athena", retryable=False)
+        logger.info("Extracting Athena via custom SQL for table=%s", table_name)
+        return await self._run_and_stream(sql, table_name, self._config)
+
+    async def _run_and_stream(self, query: str, table_name: str, config: AthenaConfig) -> ExtractResult:
         loop = asyncio.get_running_loop()
         try:
-            query = self._build_query(table_name, config, columns, filter_predicate)
             logger.debug("Athena query: %s", query)
             query_execution_id = await loop.run_in_executor(None, self._start_and_wait, query, config)
             logger.info("Athena query succeeded: query_execution_id=%s", query_execution_id)
@@ -300,3 +336,36 @@ class AthenaConnector:
 
     def supports_incremental(self) -> bool:
         return True
+
+    async def execute_query(self, sql: str, max_rows: int = 1000) -> dict[str, Any]:
+        logger.info("Executing ad-hoc Athena query")
+        loop = asyncio.get_running_loop()
+        config = self._config
+        try:
+            query_execution_id = await loop.run_in_executor(None, self._start_and_wait, sql, config)
+        except ConnectorError:
+            raise
+        except Exception as e:
+            raise ConnectorError(f"Athena query failed: {e}", "athena", retryable=True) from e
+
+        columns: list[str] = []
+        rows: list[list[Any]] = []
+        next_token: str | None = None
+        first_page = True
+
+        while len(rows) < max_rows:
+            page_rows, next_token, column_info = await loop.run_in_executor(
+                None, self._fetch_page, query_execution_id, next_token
+            )
+            if first_page:
+                columns = [c["Name"] for c in column_info]
+                page_rows = page_rows[1:] if page_rows else page_rows  # header row
+                first_page = False
+            for row in page_rows:
+                if len(rows) >= max_rows:
+                    break
+                rows.append(self._row_to_values(row, column_info))
+            if not next_token:
+                break
+
+        return {"columns": columns, "rows": rows, "row_count": len(rows)}
